@@ -1,0 +1,65 @@
+name: Sync upstream obra/superpowers
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # каждый день в 03:00 UTC
+  workflow_dispatch:        # ручной запуск через GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/obra/superpowers.git
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Attempt merge
+        id: merge
+        run: |
+          if ! git merge upstream/main --no-edit; then
+            echo "MERGE_FAILED=true" >> $GITHUB_OUTPUT
+            git merge --abort
+          fi
+
+      - name: Push to fork (if merge succeeded)
+        if: steps.merge.outputs.MERGE_FAILED != 'true'
+        run: git push origin main
+
+      - name: Create issue on merge conflict
+        if: steps.merge.outputs.MERGE_FAILED == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Merge conflict: upstream obra/superpowers needs manual resolution';
+            // Check for existing open issue with same title
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+            });
+            const exists = issues.data.some(i => i.title === title);
+            if (!exists) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: `## Merge conflict detected\n\nThe daily sync from [obra/superpowers](https://github.com/obra/superpowers) failed due to a merge conflict.\n\n### How to resolve\n\n\`\`\`bash\ncd ~/.config/kilo/superpowers\ngit fetch upstream\ngit merge upstream/main\n# resolve conflicts in your editor\ngit add .\ngit commit\ngit push origin main\n\`\`\`\n\nAfter resolving, close this issue manually.`
+              });
+            }
